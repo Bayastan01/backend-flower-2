@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 // ==================== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ====================
 console.log('🔧 Проверка переменных окружения...');
 
-const requiredEnvVars = ['BOT_TOKEN', 'CHANNEL_ID', 'ADMIN_ID', 'FRONTEND_URL'];
+const requiredEnvVars = ['BOT_TOKEN', 'CHANNEL_ID', 'ADMIN_ID'];
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
 if (missingVars.length > 0) {
@@ -21,20 +21,15 @@ if (missingVars.length > 0) {
   missingVars.forEach(varName => {
     console.error(`   - ${varName}`);
   });
-  console.error('\n💡 Добавьте эти переменные в Railway Variables:');
-  console.error('BOT_TOKEN=ваш_токен_бота_от_BotFather');
-  console.error('CHANNEL_ID=-100ваш_id_канала');
-  console.error('ADMIN_ID=ваш_telegram_id');
-  console.error('FRONTEND_URL=https://ваш-фронтенд.railway.app');
   process.exit(1);
 }
 
-// ==================== КОНСТАНТЫ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ====================
+// ==================== КОНСТАНТЫ ====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const ADMIN_ID = process.env.ADMIN_ID;
-const FRONTEND_URL = process.env.FRONTEND_URL;
-const BACKEND_URL = process.env.RAILWAY_PUBLIC_DOMAIN || `http://localhost:${PORT}`;
+const FRONTEND_URL = process.env.FRONTEND_URL || `https://${process.env.RAILWAY_STATIC_URL || `localhost:${PORT}`}`;
+const BACKEND_URL = process.env.RAILWAY_STATIC_URL ? `https://${process.env.RAILWAY_STATIC_URL}` : `http://localhost:${PORT}`;
 
 // Google OAuth - опционально
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -42,28 +37,35 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = `${BACKEND_URL}/auth/google/callback`;
 
 console.log('🌐 Конфигурация сервера:');
-console.log(`   Сервер запущен на порту: ${PORT}`);
-console.log(`   Фронтенд: ${FRONTEND_URL}`);
-console.log(`   Бэкенд: ${BACKEND_URL}`);
+console.log(`   Порт: ${PORT}`);
+console.log(`   Фронтенд URL: ${FRONTEND_URL}`);
+console.log(`   Бэкенд URL: ${BACKEND_URL}`);
 console.log(`   Google OAuth: ${GOOGLE_CLIENT_ID ? '✅ Настроен' : '❌ Не настроен'}`);
 
 // ==================== ИНИЦИАЛИЗАЦИЯ TELEGRAM БОТА ====================
 console.log('🤖 Инициализация Telegram бота...');
-const bot = new TelegramBot(BOT_TOKEN, { 
-  polling: true,
-  webHook: false 
-});
+let bot;
+try {
+  bot = new TelegramBot(BOT_TOKEN, { 
+    polling: true,
+    webHook: false 
+  });
+  console.log('✅ Telegram бот инициализирован');
+} catch (error) {
+  console.error('❌ Ошибка инициализации бота:', error.message);
+  bot = null;
+}
 
 // ==================== НАСТРОЙКА СЕРВЕРА ====================
-app.use(cors({
-  origin: FRONTEND_URL,
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
-}));
+// Включаем CORS для всех запросов (для безопасности можно ограничить)
+app.use(cors());
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// ==================== СТАТИЧЕСКИЕ ФАЙЛЫ (ФРОНТЕНД) ====================
+// Обслуживаем статические файлы из текущей директории
+app.use(express.static(__dirname));
 
 // ==================== ХРАНЕНИЕ ДАННЫХ ====================
 const DATA_DIR = path.join(__dirname, 'data');
@@ -71,6 +73,7 @@ const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  console.log(`📁 Создана директория для данных: ${DATA_DIR}`);
 }
 
 let users = {};
@@ -81,6 +84,9 @@ function loadData() {
       const data = fs.readFileSync(USERS_FILE, 'utf8');
       users = JSON.parse(data);
       console.log(`✅ Загружено ${Object.keys(users).length} пользователей`);
+    } else {
+      console.log('📂 Файл users.json не найден, создаем новый');
+      saveData();
     }
   } catch (error) {
     console.error('❌ Ошибка загрузки данных:', error.message);
@@ -295,7 +301,7 @@ app.get('/api/status', (req, res) => {
     frontendUrl: FRONTEND_URL,
     backendUrl: BACKEND_URL,
     googleOAuth: !!GOOGLE_CLIENT_ID,
-    botStatus: 'active'
+    botStatus: bot ? 'active' : 'error'
   });
 });
 
@@ -570,18 +576,20 @@ app.post('/api/publish-media-group', async (req, res) => {
       console.log(`✅ Объявление опубликовано! Ссылка: ${postLink}`);
       
       // Уведомляем пользователя
-      await bot.sendMessage(
-        chatId || userId,
-        `✅ <b>Ваше объявление успешно опубликовано!</b>\n\n` +
-        `📊 Файлов: ${mediaFiles.length}\n` +
-        `💵 Цена: ${price || 'Договорная'}\n\n` +
-        `🔗 <a href="${postLink}">Смотреть объявление в канале</a>\n\n` +
-        `Спасибо за использование Flower Market! 🌺`,
-        { 
-          parse_mode: 'HTML',
-          disable_web_page_preview: true 
-        }
-      );
+      if (bot) {
+        await bot.sendMessage(
+          chatId || userId,
+          `✅ <b>Ваше объявление успешно опубликовано!</b>\n\n` +
+          `📊 Файлов: ${mediaFiles.length}\n` +
+          `💵 Цена: ${price || 'Договорная'}\n\n` +
+          `🔗 <a href="${postLink}">Смотреть объявление в канале</a>\n\n` +
+          `Спасибо за использование Flower Market! 🌺`,
+          { 
+            parse_mode: 'HTML',
+            disable_web_page_preview: true 
+          }
+        );
+      }
       
       res.json({
         success: true,
@@ -595,11 +603,13 @@ app.post('/api/publish-media-group', async (req, res) => {
       
       // Альтернативный метод - публикуем текстовое сообщение
       try {
-        const textMessage = await bot.sendMessage(
-          CHANNEL_ID,
-          captionText,
-          { parse_mode: 'HTML' }
-        );
+        if (bot) {
+          const textMessage = await bot.sendMessage(
+            CHANNEL_ID,
+            captionText,
+            { parse_mode: 'HTML' }
+          );
+        }
         
         res.json({
           success: true,
@@ -650,15 +660,17 @@ app.post('/api/approve-user/:userId', async (req, res) => {
     saveData();
     
     // Уведомляем пользователя
-    await bot.sendMessage(
-      user.chatId || userId,
-      `✅ <b>Поздравляем!</b>\n\n` +
-      `Ваши контакты подтверждены администратором.\n` +
-      `Теперь вы можете создавать объявления в Flower Market!\n\n` +
-      `🌺 <b>Создать первое объявление:</b>\n` +
-      `${FRONTEND_URL}/?userId=${userId}&chatId=${user.chatId || userId}`,
-      { parse_mode: 'HTML' }
-    );
+    if (bot) {
+      await bot.sendMessage(
+        user.chatId || userId,
+        `✅ <b>Поздравляем!</b>\n\n` +
+        `Ваши контакты подтверждены администратором.\n` +
+        `Теперь вы можете создавать объявления в Flower Market!\n\n` +
+        `🌺 <b>Создать первое объявление:</b>\n` +
+        `${FRONTEND_URL}/?userId=${userId}&chatId=${user.chatId || userId}`,
+        { parse_mode: 'HTML' }
+      );
+    }
     
     res.json({
       success: true,
@@ -685,260 +697,221 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Главная страница (опционально)
-app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Flower Market Backend</title>
-      <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-        h1 { color: #667eea; }
-        .status { background: #f0f0f0; padding: 20px; border-radius: 10px; margin: 20px auto; max-width: 500px; }
-      </style>
-    </head>
-    <body>
-      <h1>🌺 Flower Market Backend</h1>
-      <div class="status">
-        <p><strong>Status:</strong> ✅ Online</p>
-        <p><strong>Users:</strong> ${Object.keys(users).length}</p>
-        <p><strong>Frontend:</strong> <a href="${FRONTEND_URL}">${FRONTEND_URL}</a></p>
-      </div>
-      <p>API endpoints are available at /api/*</p>
-    </body>
-    </html>
-  `);
+// ==================== ОБСЛУЖИВАНИЕ ФРОНТЕНДА ====================
+// Главная страница - отдаем фронтенд HTML
+app.get('*', (req, res) => {
+  // Проверяем, является ли запрос API запросом
+  if (req.path.startsWith('/api/') || req.path.startsWith('/auth/')) {
+    return res.status(404).json({ error: 'API endpoint not found' });
+  }
+  
+  // Отдаем файл index.html для всех остальных запросов (SPA)
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // ==================== TELEGRAM BOT FUNCTIONS ====================
 
 // Команда /start
-bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const firstName = msg.from.first_name || 'Пользователь';
-  
-  console.log(`👤 /start от ${userId} (${firstName})`);
-  
-  if (!users[userId]) {
-    users[userId] = {
-      id: userId,
-      chatId: chatId,
-      firstName: firstName,
-      firstSeen: new Date().toISOString(),
-      hasContacts: false,
-      approved: false,
-      addedToChannel: false
-    };
-    saveData();
-  }
-  
-  const user = users[userId];
-  
-  if (userId.toString() === ADMIN_ID.toString()) {
-    const userCount = Object.keys(users).length;
-    const pendingCount = Object.values(users).filter(u => u.hasContacts && !u.approved).length;
-    const inChannelCount = Object.values(users).filter(u => u.addedToChannel).length;
+if (bot) {
+  bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const firstName = msg.from.first_name || 'Пользователь';
     
-    await bot.sendMessage(
-      chatId,
-      `👑 <b>Привет, администратор ${firstName}!</b>\n\n` +
-      `📊 <b>Статистика:</b>\n` +
-      `👥 Всего пользователей: ${userCount}\n` +
-      `⏳ Ожидают подтверждения: ${pendingCount}\n` +
-      `📢 В канале: ${inChannelCount}\n\n` +
-      `🎯 <b>Быстрые действия:</b>\n` +
-      `• /pending - список ожидающих подтверждения\n` +
-      `• /users - все пользователи`,
-      { parse_mode: 'HTML' }
-    );
-  } else if (user.approved) {
-    await bot.sendMessage(
-      chatId,
-      `✅ <b>Привет, ${firstName}!</b>\n\n` +
-      `Ваш доступ подтвержден!\n\n` +
-      `Теперь вы можете создавать объявления:\n\n` +
-      `🌺 <b>Создать объявление:</b>`,
-      {
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: '🌺 СОЗДАТЬ ОБЪЯВЛЕНИЕ',
-                url: `${FRONTEND_URL}/?userId=${userId}&chatId=${chatId}`
-              }
-            ]
-          ]
-        }
-      }
-    );
-  } else if (user.hasContacts) {
-    await bot.sendMessage(
-      chatId,
-      `⏳ <b>Привет, ${firstName}!</b>\n\n` +
-      `Ваши контакты получены.\n` +
-      `Администратор проверяет ваши контакты.\n\n` +
-      `Обычно проверка занимает несколько минут.\n` +
-      `Вы получите уведомление, когда вас подтвердят.`,
-      { parse_mode: 'HTML' }
-    );
-  } else {
-    await bot.sendMessage(
-      chatId,
-      `👋 <b>Привет, ${firstName}!</b>\n\n` +
-      `Добро пожаловать в <b>Flower Market</b>!\n\n` +
-      `Для создания объявлений нам нужны ваши контакты из телефонной книги.\n` +
-      `Контакты будут отправлены администратору для проверки.\n\n` +
-      `После подтверждения вы сможете публиковать объявления.\n\n` +
-      `📱 <b>Добавить контакты:</b>`,
-      {
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [[
-            {
-              text: '📱 ДОБАВИТЬ КОНТАКТЫ',
-              url: `${FRONTEND_URL}/?userId=${userId}&chatId=${chatId}`
-            }
-          ]]
-        }
-      }
-    );
-  }
-});
-
-// Команда для админа: просмотр ожидающих
-bot.onText(/\/pending/, async (msg) => {
-  const userId = msg.from.id;
-  
-  if (userId.toString() !== ADMIN_ID.toString()) {
-    return bot.sendMessage(msg.chat.id, '❌ Доступ запрещен');
-  }
-  
-  const pendingUsers = Object.values(users).filter(u => u.hasContacts && !u.approved);
-  
-  if (pendingUsers.length === 0) {
-    return bot.sendMessage(msg.chat.id, '✅ Нет пользователей, ожидающих подтверждения');
-  }
-  
-  let message = '⏳ <b>Пользователи, ожидающие подтверждения:</b>\n\n';
-  
-  pendingUsers.forEach((user, index) => {
-    message += `${index + 1}. ${user.firstName}\n`;
-    message += `   ID: <code>${user.id}</code>\n`;
-    message += `   Контактов: ${user.contactsCount}\n`;
-    message += `   Источник: ${user.importSource || 'неизвестно'}\n`;
-    message += `   [Подтвердить](approve_${user.id})\n\n`;
-  });
-  
-  bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
-});
-
-// Команда для админа: все пользователи
-bot.onText(/\/users/, async (msg) => {
-  const userId = msg.from.id;
-  
-  if (userId.toString() !== ADMIN_ID.toString()) {
-    return bot.sendMessage(msg.chat.id, '❌ Доступ запрещен');
-  }
-  
-  const allUsers = Object.values(users);
-  
-  if (allUsers.length === 0) {
-    return bot.sendMessage(msg.chat.id, '👥 Нет пользователей');
-  }
-  
-  let message = '👥 <b>Все пользователи:</b>\n\n';
-  
-  allUsers.forEach((user, index) => {
-    message += `${index + 1}. ${user.firstName}\n`;
-    message += `   ID: <code>${user.id}</code>\n`;
-    message += `   Контакты: ${user.hasContacts ? '✅' : '❌'}\n`;
-    message += `   Подтвержден: ${user.approved ? '✅' : '❌'}\n`;
-    message += `   В канале: ${user.addedToChannel ? '✅' : '❌'}\n\n`;
-  });
-  
-  bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
-});
-
-// Обработка callback-запросов от кнопок
-bot.on('callback_query', async (callbackQuery) => {
-  const chatId = callbackQuery.message.chat.id;
-  const userId = callbackQuery.from.id;
-  const data = callbackQuery.data;
-  
-  console.log(`🔘 Callback от ${userId}: ${data}`);
-  
-  // Проверяем, что это администратор
-  if (userId.toString() !== ADMIN_ID.toString()) {
-    await bot.answerCallbackQuery(callbackQuery.id, {
-      text: '❌ У вас нет прав для этого действия',
-      show_alert: true
-    });
-    return;
-  }
-  
-  if (data.startsWith('approve_')) {
-    const targetUserId = data.replace('approve_', '');
+    console.log(`👤 /start от ${userId} (${firstName})`);
     
-    try {
-      const user = users[targetUserId];
-      
-      if (!user) {
-        await bot.answerCallbackQuery(callbackQuery.id, {
-          text: '❌ Пользователь не найден',
-          show_alert: true
-        });
-        return;
-      }
-      
-      // Подтверждаем пользователя
-      user.approved = true;
-      user.approvedAt = new Date().toISOString();
-      user.approvedBy = userId.toString();
-      
+    if (!users[userId]) {
+      users[userId] = {
+        id: userId,
+        chatId: chatId,
+        firstName: firstName,
+        firstSeen: new Date().toISOString(),
+        hasContacts: false,
+        approved: false,
+        addedToChannel: false
+      };
       saveData();
+    }
+    
+    const user = users[userId];
+    
+    if (userId.toString() === ADMIN_ID.toString()) {
+      const userCount = Object.keys(users).length;
+      const pendingCount = Object.values(users).filter(u => u.hasContacts && !u.approved).length;
+      const inChannelCount = Object.values(users).filter(u => u.addedToChannel).length;
       
-      // Уведомляем пользователя
       await bot.sendMessage(
-        user.chatId || targetUserId,
-        `✅ <b>Поздравляем!</b>\n\n` +
-        `Ваши контакты подтверждены администратором.\n` +
-        `Теперь вы можете создавать объявления в Flower Market!\n\n` +
-        `🌺 <b>Создать первое объявление:</b>\n` +
-        `${FRONTEND_URL}/?userId=${targetUserId}&chatId=${user.chatId || targetUserId}`,
+        chatId,
+        `👑 <b>Привет, администратор ${firstName}!</b>\n\n` +
+        `📊 <b>Статистика:</b>\n` +
+        `👥 Всего пользователей: ${userCount}\n` +
+        `⏳ Ожидают подтверждения: ${pendingCount}\n` +
+        `📢 В канале: ${inChannelCount}\n\n` +
+        `🎯 <b>Быстрые действия:</b>\n` +
+        `• /pending - список ожидающих подтверждения\n` +
+        `• /users - все пользователи`,
         { parse_mode: 'HTML' }
       );
-      
-      // Обновляем сообщение у администратора
-      await bot.editMessageText(
-        `✅ <b>Пользователь подтвержден</b>\n\n` +
-        `👤 Пользователь: ${user.firstName || 'ID: ' + targetUserId}\n` +
-        `🆔 ID: <code>${targetUserId}</code>\n` +
-        `📅 Подтверждено: ${new Date().toLocaleString('ru-RU')}\n\n` +
-        `Пользователь получил уведомление о подтверждении.`,
+    } else if (user.approved) {
+      await bot.sendMessage(
+        chatId,
+        `✅ <b>Привет, ${firstName}!</b>\n\n` +
+        `Ваш доступ подтвержден!\n\n` +
+        `Теперь вы можете создавать объявления:\n\n` +
+        `🌺 <b>Создать объявление:</b>`,
         {
-          chat_id: chatId,
-          message_id: callbackQuery.message.message_id,
-          parse_mode: 'HTML'
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: '🌺 СОЗДАТЬ ОБЪЯВЛЕНИЕ',
+                  url: `${FRONTEND_URL}/?userId=${userId}&chatId=${chatId}`
+                }
+              ]
+            ]
+          }
         }
       );
-      
-      await bot.answerCallbackQuery(callbackQuery.id, {
-        text: '✅ Пользователь подтвержден',
-        show_alert: true
-      });
-      
-    } catch (error) {
-      console.error('❌ Ошибка подтверждения:', error);
-      await bot.answerCallbackQuery(callbackQuery.id, {
-        text: '❌ Ошибка при подтверждении',
-        show_alert: true
-      });
+    } else if (user.hasContacts) {
+      await bot.sendMessage(
+        chatId,
+        `⏳ <b>Привет, ${firstName}!</b>\n\n` +
+        `Ваши контакты получены.\n` +
+        `Администратор проверяет ваши контакты.\n\n` +
+        `Обычно проверка занимает несколько минут.\n` +
+        `Вы получите уведомление, когда вас подтвердят.`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await bot.sendMessage(
+        chatId,
+        `👋 <b>Привет, ${firstName}!</b>\n\n` +
+        `Добро пожаловать в <b>Flower Market</b>!\n\n` +
+        `Для создания объявлений нам нужны ваши контакты из телефонной книги.\n` +
+        `Контакты будут отправлены администратору для проверки.\n\n` +
+        `После подтверждения вы сможете публиковать объявления.\n\n` +
+        `📱 <b>Добавить контакты:</b>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [[
+              {
+                text: '📱 ДОБАВИТЬ КОНТАКТЫ',
+                url: `${FRONTEND_URL}/?userId=${userId}&chatId=${chatId}`
+              }
+            ]]
+          }
+        }
+      );
     }
-  }
-});
+  });
+
+  // Команда для админа: просмотр ожидающих
+  bot.onText(/\/pending/, async (msg) => {
+    const userId = msg.from.id;
+    
+    if (userId.toString() !== ADMIN_ID.toString()) {
+      return bot.sendMessage(msg.chat.id, '❌ Доступ запрещен');
+    }
+    
+    const pendingUsers = Object.values(users).filter(u => u.hasContacts && !u.approved);
+    
+    if (pendingUsers.length === 0) {
+      return bot.sendMessage(msg.chat.id, '✅ Нет пользователей, ожидающих подтверждения');
+    }
+    
+    let message = '⏳ <b>Пользователи, ожидающие подтверждения:</b>\n\n';
+    
+    pendingUsers.forEach((user, index) => {
+      message += `${index + 1}. ${user.firstName}\n`;
+      message += `   ID: <code>${user.id}</code>\n`;
+      message += `   Контактов: ${user.contactsCount}\n`;
+      message += `   Источник: ${user.importSource || 'неизвестно'}\n`;
+      message += `   [Подтвердить](approve_${user.id})\n\n`;
+    });
+    
+    bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
+  });
+
+  // Обработка callback-запросов от кнопок
+  bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const userId = callbackQuery.from.id;
+    const data = callbackQuery.data;
+    
+    console.log(`🔘 Callback от ${userId}: ${data}`);
+    
+    // Проверяем, что это администратор
+    if (userId.toString() !== ADMIN_ID.toString()) {
+      await bot.answerCallbackQuery(callbackQuery.id, {
+        text: '❌ У вас нет прав для этого действия',
+        show_alert: true
+      });
+      return;
+    }
+    
+    if (data.startsWith('approve_')) {
+      const targetUserId = data.replace('approve_', '');
+      
+      try {
+        const user = users[targetUserId];
+        
+        if (!user) {
+          await bot.answerCallbackQuery(callbackQuery.id, {
+            text: '❌ Пользователь не найден',
+            show_alert: true
+          });
+          return;
+        }
+        
+        // Подтверждаем пользователя
+        user.approved = true;
+        user.approvedAt = new Date().toISOString();
+        user.approvedBy = userId.toString();
+        
+        saveData();
+        
+        // Уведомляем пользователя
+        await bot.sendMessage(
+          user.chatId || targetUserId,
+          `✅ <b>Поздравляем!</b>\n\n` +
+          `Ваши контакты подтверждены администратором.\n` +
+          `Теперь вы можете создавать объявления в Flower Market!\n\n` +
+          `🌺 <b>Создать первое объявление:</b>\n` +
+          `${FRONTEND_URL}/?userId=${targetUserId}&chatId=${user.chatId || targetUserId}`,
+          { parse_mode: 'HTML' }
+        );
+        
+        // Обновляем сообщение у администратора
+        await bot.editMessageText(
+          `✅ <b>Пользователь подтвержден</b>\n\n` +
+          `👤 Пользователь: ${user.firstName || 'ID: ' + targetUserId}\n` +
+          `🆔 ID: <code>${targetUserId}</code>\n` +
+          `📅 Подтверждено: ${new Date().toLocaleString('ru-RU')}\n\n` +
+          `Пользователь получил уведомление о подтверждении.`,
+          {
+            chat_id: chatId,
+            message_id: callbackQuery.message.message_id,
+            parse_mode: 'HTML'
+          }
+        );
+        
+        await bot.answerCallbackQuery(callbackQuery.id, {
+          text: '✅ Пользователь подтвержден',
+          show_alert: true
+        });
+        
+      } catch (error) {
+        console.error('❌ Ошибка подтверждения:', error);
+        await bot.answerCallbackQuery(callbackQuery.id, {
+          text: '❌ Ошибка при подтверждении',
+          show_alert: true
+        });
+      }
+    }
+  });
+}
 
 // ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
@@ -971,19 +944,21 @@ async function notifyAdminAboutContacts(userId, contactsCount, firstName, contac
       `\n\n🎯 <b>Действия:</b>`;
     
     // Отправляем сообщение с inline-кнопками
-    await bot.sendMessage(ADMIN_ID, message, { 
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: '✅ ПОДТВЕРДИТЬ ПОЛЬЗОВАТЕЛЯ',
-              callback_data: `approve_${userId}`
-            }
+    if (bot) {
+      await bot.sendMessage(ADMIN_ID, message, { 
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '✅ ПОДТВЕРДИТЬ ПОЛЬЗОВАТЕЛЯ',
+                callback_data: `approve_${userId}`
+              }
+            ]
           ]
-        ]
-      }
-    });
+        }
+      });
+    }
     
     console.log(`✅ Администратор уведомлен о ${contactsCount} контактах пользователя ${userId}`);
     
@@ -994,13 +969,13 @@ async function notifyAdminAboutContacts(userId, contactsCount, firstName, contac
 
 // ==================== ЗАПУСК СЕРВЕРА ====================
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log('='.repeat(60));
-  console.log('🌺 FLOWER MARKET BACKEND ЗАПУЩЕН');
+  console.log('🌺 FLOWER MARKET ЗАПУЩЕН');
   console.log('='.repeat(60));
   console.log(`📍 Порт: ${PORT}`);
-  console.log(`🌐 Фронтенд: ${FRONTEND_URL}`);
-  console.log(`🤖 Бот: активен`);
+  console.log(`🌐 URL: http://0.0.0.0:${PORT}`);
+  console.log(`🤖 Бот: ${bot ? 'активен' : 'ошибка'}`);
   console.log(`📢 Канал: ${CHANNEL_ID}`);
   console.log(`👑 Админ ID: ${ADMIN_ID}`);
   console.log(`🔐 Google OAuth: ${GOOGLE_CLIENT_ID ? '✅ Настроен' : '❌ Не настроен'}`);
@@ -1024,14 +999,14 @@ setInterval(saveData, 30000);
 // Обработка завершения
 process.on('SIGINT', () => {
   console.log('\n💾 Сохраняю данные перед выходом...');
-  bot.stopPolling();
+  if (bot) bot.stopPolling();
   saveData();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('\n💾 Получен SIGTERM, сохраняю данные...');
-  bot.stopPolling();
+  if (bot) bot.stopPolling();
   saveData();
   process.exit(0);
 });
